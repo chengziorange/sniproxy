@@ -3,9 +3,9 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	log "github.com/sirupsen/logrus"
 	"io"
 	"io/ioutil"
-	"log"
 	"net"
 	"regexp"
 	"sniproxy/internal/sni"
@@ -30,7 +30,7 @@ func main() {
 			for {
 				conn, err := l.Accept()
 				if err != nil {
-					log.Print(err)
+					log.Debug(err)
 					continue
 				}
 				go handleConnection(conn, rule.ForwardTargets)
@@ -55,7 +55,14 @@ func initCliParas() (*config, error) {
 	configFilePath := flag.String("c", "", "eg. \"config.json\" --- Config file path. Will override other cli params.")
 	listenAddr := flag.String("l", ":443", "eg. \"0.0.0.0:443\" --- Listen address and port.")
 	forwardTargets := flag.String("f", "", "eg. \"www.baidu.com/112.80.248.75:443,one.one.one.one/[2606:4700:4700::1111]:443\" --- Forward list.")
+	debug := flag.Bool("debug", false, "Enable debug log display.")
 	flag.Parse()
+
+	if *debug {
+		log.SetLevel(log.DebugLevel)
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
 
 	var config config
 
@@ -74,19 +81,19 @@ func initCliParas() (*config, error) {
 	} else {
 		jsonBytes, err := ioutil.ReadFile(*configFilePath)
 		if err != nil {
-			log.Print("Can't read config file!")
+			log.Warn("Can't read config file!")
 			return nil, err
 		}
 		err = json.Unmarshal(jsonBytes, &config)
 		if err != nil {
-			log.Print("Can't unmarshal config file!")
+			log.Warn("Can't unmarshal config file!")
 			return nil, err
 		}
 	}
 
 	for _, rule := range config.Rules {
 		for serverName, target := range rule.ForwardTargets {
-			log.Print("ADD [" + serverName + " -> " + target + "] at [" + rule.ListenAddr + "]")
+			log.Info("ADD [" + serverName + " -> " + target + "] at [" + rule.ListenAddr + "]")
 		}
 	}
 
@@ -102,7 +109,7 @@ func getForwardTarget(serverName string, forwardTargets map[string]string) (targ
 			keyServerName = ".*(" + strings.ReplaceAll(keyServerName[1:], ".", "\\.") + ")$"
 			matched, err := regexp.Match(keyServerName, []byte(serverName))
 			if err != nil {
-				log.Print("Error when matching sni with allowed sni")
+				log.Warn("Error when matching sni with allowed sni")
 				continue
 			}
 			if matched {
@@ -116,43 +123,43 @@ func getForwardTarget(serverName string, forwardTargets map[string]string) (targ
 func handleConnection(clientConn net.Conn, forwardTargets map[string]string) {
 	defer func(clientConn net.Conn) {
 		if err := clientConn.Close(); err != nil {
-			log.Print(err)
+			log.Debug(err)
 		}
 	}(clientConn)
 
 	if err := clientConn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		log.Print(err)
+		log.Debug(err)
 		return
 	}
 
 	clientHello, clientReader, err := sni.PeekClientHello(clientConn)
 	if err != nil {
-		log.Print(err)
+		log.Debug(err)
 		return
 	}
 
 	// 设置为不会超时
 	if err := clientConn.SetReadDeadline(time.Time{}); err != nil {
-		log.Print(err)
+		log.Debug(err)
 		return
 	}
 
 	forwardTarget, ok := getForwardTarget(clientHello.ServerName, forwardTargets)
 	if !ok {
-		log.Print("Blocking connection to unauthorized backend.")
-		log.Print("Source IP: " + clientConn.RemoteAddr().String())
-		log.Print("Target SNI: " + clientHello.ServerName)
+		log.Debug("Blocking connection to unauthorized backend.")
+		log.Debug("Source Addr: " + clientConn.RemoteAddr().String())
+		log.Debug("Target SNI: " + clientHello.ServerName)
 		return
 	}
 
 	backendConn, err := net.DialTimeout("tcp", forwardTarget, 5*time.Second)
 	if err != nil {
-		log.Print(err)
+		log.Warn(err)
 		return
 	}
 	defer func(backendConn net.Conn) {
 		if err := backendConn.Close(); err != nil {
-			log.Print(err)
+			log.Debug(err)
 		}
 	}(backendConn)
 
@@ -161,19 +168,19 @@ func handleConnection(clientConn net.Conn, forwardTargets map[string]string) {
 
 	go func() {
 		if _, err := io.Copy(clientConn, backendConn); err != nil {
-			log.Print(err)
+			log.Debug(err)
 		}
 		if err := clientConn.(*net.TCPConn).CloseWrite(); err != nil {
-			log.Print(err)
+			log.Debug(err)
 		}
 		wg.Done()
 	}()
 	go func() {
 		if _, err := io.Copy(backendConn, clientReader); err != nil {
-			log.Print(err)
+			log.Debug(err)
 		}
 		if err := backendConn.(*net.TCPConn).CloseWrite(); err != nil {
-			log.Print(err)
+			log.Debug(err)
 		}
 		wg.Done()
 	}()
